@@ -1,6 +1,9 @@
 import http from "http"
-import WebSocket from "ws";
 import express from "express"
+import SocketIO from "socket.io";
+import { Socket } from "dgram";
+import { EventEmitter } from "stream";
+
 const app = express()
 const port = 3000;
 
@@ -15,34 +18,58 @@ app.get("/", (req, res) =>{
 
 const handleListen = () => console.log("Listening on http://localHost:3000")
 
-const server = http.createServer(app);
-const wss = new WebSocket.Server({server});
+const httpServer = http.createServer(app);
+const WsServer = SocketIO(httpServer);
 
-const sockets = [];
+function publicRooms(){
+    
+    const { rooms, sids } = WsServer.sockets.adapter;
 
-wss.on("connection", (socket) => {
-    console.log("Connected to Browser");
-    sockets.push(socket);
+    const publicRooms = [];
+    rooms.forEach((_, key) => {
+        if(sids.get(key) == undefined){
+            publicRooms.push(key);
+        }
+    });
+    return publicRooms;
+}
+
+
+
+WsServer.on("connection", (socket) => {
+
     socket["nickname"] = "Anon"
 
-    socket.on("close", ()=>{ 
-        console.log("Disconnected to Browser");
+    socket.onAny((event)=>{
+        console.log(`Socket event: ${event}`);
     })
 
-    socket.on("message", (message)=>{
-        const parsed = JSON.parse(message.toString());
-        switch(parsed.type){
-            case "chat":
-                sockets.forEach((sock) =>{
-                    sock.send(`${socket.nickname}: ${parsed.message}`)
-                })
-                break;
-            case "nick":
-                socket["nickname"] = parsed.message;
-                break;
-            default:
-        }
-    })
-});
+    socket.on("enter_room", (roomName, done) => {
+        socket.join(roomName);
+        done();
+        socket.to(roomName).emit("welcome", socket.nickname);
+        WsServer.sockets.emit("room_change", publicRooms());
+    });
 
-server.listen(3000, handleListen);
+    socket.on("disconnecting", ()=>{
+        socket.rooms.forEach((room) => {
+            socket.to(room).emit("bye", socket.nickname);
+        });
+    });
+
+    socket.on("disconnect", ()=>{
+        WsServer.sockets.emit("room_change", publicRooms());
+    })
+
+    socket.on("new_message", (msg, room,done)=>{
+        socket.to(room).emit("new_message",`${socket.nickname}: ${msg}` );
+        done();
+    });
+
+    socket.on("nickname", (nickname)=>{
+        socket["nickname"] = nickname;
+    });
+
+})
+
+httpServer.listen(3000, handleListen);
